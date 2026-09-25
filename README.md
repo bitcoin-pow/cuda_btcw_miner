@@ -1,8 +1,8 @@
-# BTCW CUDA Miner — RTX 4060 NEWFORK
+# BTCW CUDA Miner — RTX 4080 SUPER NEWFORK
 
 CUDA miner for the BTCW `NO_EXT_WORK`/NEWFORK signing-work algorithm. The
-default build is tuned for an NVIDIA RTX 4060 (Ada, compute capability 8.9,
-8 GB VRAM) and uses BTCW's original 224-byte shared-memory payload.
+RTX 4080 SUPER build uses the W26 lookup-table profile and BTCW's original
+224-byte shared-memory payload.
 
 ## Algorithm
 
@@ -36,7 +36,7 @@ Important optimizations include:
 - fixed-layout, word-native RFC6979/HMAC-SHA256;
 - reuse of secret-key and reduced-message SHA prefix state;
 - secp256k1 GLV scalar splitting;
-- a shared W24/W9 fixed-base lookup table of approximately 2.5 GiB;
+- a five-group signed W26 fixed-base lookup table of approximately 9 GiB;
 - XYZZ mixed point addition;
 - 128-candidate batched scalar inversion;
 - two 64-candidate field-inversion sub-batches;
@@ -53,17 +53,17 @@ known test cases and aborts if they differ.
 - Linux x86-64
 - NVIDIA driver
 - CUDA Toolkit with `nvcc`
-- RTX 4060 or another CUDA-capable NVIDIA GPU
-- roughly 4 GiB of free GPU memory for the default configuration
+- NVIDIA RTX 4080 SUPER
+- substantially more than 12 GiB of free GPU memory for the W26 configuration
 - a compatible BTCW NEWFORK node exposing `/shared_mem`
 
 ## Build
 
-Make the script executable and build:
+Make the RTX 4080 SUPER build script executable and build:
 
 ```bash
-chmod +x build_cuda.sh
-./build_cuda.sh
+chmod +x build_cuda_4080_super.sh
+./build_cuda_4080_super.sh
 ```
 
 The default configuration is:
@@ -72,38 +72,22 @@ The default configuration is:
 CUDA architecture: sm_89
 register cap:      160
 sign batch:        128
+lookup table:      W26
 ```
 
-It creates:
+This creates `release/btcw_cuda_miner_4080_super`.
 
-```text
-release/btcw_cuda_miner_batch128
-release/btcw_cuda_miner
-```
-
-Both files contain the same default build. The second name is a compatibility
-copy.
-
-Specify a different register cap with the first argument:
+Specify a register cap with the first argument:
 
 ```bash
-./build_cuda.sh 160
+./build_cuda_4080_super.sh 160
 ```
 
-Build batch 64 for comparison:
-
-```bash
-CUDA_SIGN_BATCH=64 ./build_cuda.sh 160
-```
-
-This produces `release/btcw_cuda_miner_batch64` and updates the compatibility
-copy `release/btcw_cuda_miner`.
-
-Build for a different CUDA architecture:
-
-```bash
-CUDA_ARCH=sm_89 ./build_cuda.sh 160
-```
+The W26 table consumes approximately 9 GiB and the default batch-128 K
+scratch uses approximately 3 GiB at the automatic RTX 4080 SUPER work size.
+Allow substantially more than 12 GiB of free VRAM for these allocations and
+additional runtime memory. W26 reduces each 128-bit GLV half from six signed
+windows to five.
 
 The compiler prints register, stack, and spill statistics for the kernels.
 Large local frames are expected because the mining kernel batches many
@@ -114,32 +98,28 @@ secp256k1 operations.
 Run the recommended batch-128 binary from the repository root:
 
 ```bash
-./release/btcw_cuda_miner_batch128
+./release/btcw_cuda_miner_4080_super
 ```
 
 Command-line syntax:
 
 ```text
-./release/btcw_cuda_miner_batch128 [gpu_number] [work_size] [block_size]
+./release/btcw_cuda_miner_4080_super [gpu_number] [work_size] [block_size]
 ```
 
 Examples:
 
 ```bash
 # Default GPU and automatically selected work size
-./release/btcw_cuda_miner_batch128
+./release/btcw_cuda_miner_4080_super
 
-# Explicit RTX 4060 launch settings
-./release/btcw_cuda_miner_batch128 0 233472 128
+# Select GPU 0 and let the miner choose the work size
+./release/btcw_cuda_miner_4080_super 0
 ```
 
-The tuned defaults for a 24-SM RTX 4060 are:
-
-```text
-work size:  24 * 9728 = 233472
-block size: 128
-sign batch: 128
-```
+The automatic work size is the GPU's SM count multiplied by 9728, clamped
+to the range 65536–4194304 and rounded up to a multiple of the block size.
+The default block size and sign batch are both 128.
 
 At startup, confirm that the output contains:
 

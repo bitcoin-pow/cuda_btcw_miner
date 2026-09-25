@@ -10,6 +10,12 @@ static __device__ __forceinline__ ulong mul_hi(ulong a, ulong b) { return __umul
 static __device__ __forceinline__ uint rotate(uint x, uint n) { n &= 31u; return (x << n) | (x >> ((32u-n)&31u)); }
 #define __NV_CL_C_VERSION 120
 #define get_global_size(dim) ((uint)(gridDim.x * blockDim.x))
+#ifndef BTCW_LUT_BITS
+#define BTCW_LUT_BITS 24
+#endif
+#if BTCW_LUT_BITS != 24 && BTCW_LUT_BITS != 26
+#error "BTCW_LUT_BITS must be 24 or 26"
+#endif
 // =============================================================================
 // UltrafastSecp256k1 OpenCL Kernels - Field Arithmetic
 // =============================================================================
@@ -4065,13 +4071,20 @@ FORCE_INLINE void glv_accum_half(
     const ulong* table2, const ulong* table3,
     const ulong* table4, const ulong* table5)
 {
+#if BTCW_LUT_BITS == 26
+    const uint offsets[6]={0u,26u,52u,78u,104u,0u};
+    const uint widths [6]={26u,26u,26u,26u,25u,0u};
+    const int groups=5;
+#else
     const uint offsets[6]={0u,24u,48u,72u,96u,120u};
     const uint widths [6]={24u,24u,24u,24u,24u,9u};
+    const int groups=6;
+#endif
     const ulong* tables[6]={table0,table1,table2,table3,table4,table5};
     uint carry=0u;
 
 #pragma unroll
-    for (int group=0; group<6; ++group) {
+    for (int group=0; group<groups; ++group) {
         uint w=widths[group];
         uint raw=scalar_extract_bits_128(abs_s,offsets[group],w);
 
@@ -4803,6 +4816,24 @@ extern "C" __global__ void diagnostic_rfc6979_testcase(uint* ok_out) {
  * (2^25 magnitudes, 2 GiB/group); final group uses a 25-bit window with an
  * implicit zero bit 128 (2^24 magnitudes, 1 GiB). Total VRAM: 9 GiB.
  */
+#if BTCW_LUT_BITS == 26
+__device__ __constant__ ulong GLV_BASE_X[6][4] = {
+    {0x59F2815B16F81798UL,0x029BFCDB2DCE28D9UL,0x55A06295CE870B07UL,0x79BE667EF9DCBBACUL},
+    {0x7FAFC7770C584DD5UL,0x1080577E327B012AUL,0xA2DF7E9CD5226CB9UL,0x264BBD436A28BC42UL},
+    {0xEFF959F43AD86047UL,0x79B53A043A9B8BCAUL,0x719CCA7764CA9067UL,0x8E7BCD0BD35983A7UL},
+    {0x4850312D6C0B80D9UL,0x4D1E7E100FDC47F0UL,0x8C0892E9CC3EE3EEUL,0x8E2A7166E7EC4B96UL},
+    {0x3AB150242BCBB891UL,0x8F7CC643DF26CBEEUL,0xE8281BAA743F8F9AUL,0xC738C56B03B2ABE1UL},
+    {0UL,0UL,0UL,0UL},
+};
+__device__ __constant__ ulong GLV_BASE_Y[6][4] = {
+    {0x9C47D08FFB10D4B8UL,0xFD17B448A6855419UL,0x5DA4FBFC0E1108A8UL,0x483ADA7726A3C465UL},
+    {0xE61227937704AB11UL,0x6A118243717B8D8DUL,0xD4F75CE24C33BE22UL,0xD87C6FA94EE093B4UL},
+    {0xEA10047E8460372AUL,0x79E88E2E47FD68B3UL,0x940310420CA95145UL,0x10B7770B2A3DA4B3UL},
+    {0x49C61F2AD6B29F50UL,0x5297B688D706349AUL,0x2CEDD29B716A9D48UL,0xEADB0BA9AE2CBE59UL},
+    {0x17E735D9699A84C3UL,0x82314EEF7880CFE9UL,0x7F718F2EACBFBBBBUL,0x893FB578951AD253UL},
+    {0UL,0UL,0UL,0UL},
+};
+#else
 __device__ __constant__ ulong GLV_BASE_X[6][4] = {
     {0x59F2815B16F81798UL,0x029BFCDB2DCE28D9UL,0x55A06295CE870B07UL,0x79BE667EF9DCBBACUL},
     {0xCB6115925232FCDAUL,0xB700DBFFA6C0E77BUL,0x6BF771C00BD548C7UL,0x723CBAA6E5DB996DUL},
@@ -4819,6 +4850,7 @@ __device__ __constant__ ulong GLV_BASE_Y[6][4] = {
     {0x701D3DB7F23CB96FUL,0x126B596B973F7B77UL,0x7CF674DECCB6AF93UL,0x6E0568DB9B0B1329UL},
     {0x0C0D1A041E177EA1UL,0x1735DBF7C0A11A13UL,0x081809FA25D40F9BUL,0x7370F91CFB67E4F5UL},
 };
+#endif
 
 FORCE_INLINE void write_affine_to_table(ulong* table, int index,
                                          const JacobianPoint* jac) {
@@ -4839,9 +4871,13 @@ FORCE_INLINE void write_affine_to_table(ulong* table, int index,
 /* Host launches this once for each group. */
 extern "C" __global__ void precompute_ecmult_gen_table(ulong* table, uint group, uint entries) {
     const uint slot=(uint)((uint)(blockIdx.x * blockDim.x + threadIdx.x));
-    if (group>=6u || slot>=entries) return;
+    if (group>=((BTCW_LUT_BITS==26)?5u:6u) || slot>=entries) return;
     const uint value=slot+1u;
+#if BTCW_LUT_BITS == 26
+    const int width=(group<4u)?26:25;
+#else
     const int width=(group<5u)?24:9;
+#endif
 
     AffinePoint base;
     for(int i=0;i<4;++i){base.x.limbs[i]=GLV_BASE_X[group][i];base.y.limbs[i]=GLV_BASE_Y[group][i];}

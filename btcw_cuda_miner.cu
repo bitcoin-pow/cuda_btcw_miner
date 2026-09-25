@@ -34,7 +34,7 @@ int main(int argc,char** argv){
  int gpu_num=0; size_t user_work=0, user_block=0;
  if(argc>=2) gpu_num=atoi(argv[1]); if(argc>=3) user_work=strtoull(argv[2],nullptr,10); if(argc>=4) user_block=strtoull(argv[3],nullptr,10);
  int ndev=0; CUDA_CHECK(cudaGetDeviceCount(&ndev)); if(ndev<=0){fprintf(stderr,"No CUDA GPU found.\n");return 1;}
- print_timestamp(); printf("BTCW.SPACE CUDA GPU Miner 4060-v202-NEWFORK (RFC-extra fast path, DER-SHA fixed, sign-batch%d)\n",SIGN_BATCH);
+ print_timestamp(); printf("BTCW.SPACE CUDA GPU Miner NEWFORK (W%d LUT, RFC-extra fast path, sign-batch%d)\n",BTCW_LUT_BITS,SIGN_BATCH);
  print_timestamp(); printf("Found %d CUDA device(s):\n",ndev);
  for(int i=0;i<ndev;i++){ cudaDeviceProp p{}; CUDA_CHECK(cudaGetDeviceProperties(&p,i)); printf("  Device %d: %s SMs=%d Mem=%zuMB MaxBlock=%d CC=%d.%d\n",i,p.name,p.multiProcessorCount,p.totalGlobalMem/(1024*1024),p.maxThreadsPerBlock,p.major,p.minor); }
  int dev=(gpu_num>0)?gpu_num-1:0; if(dev<0||dev>=ndev){fprintf(stderr,"GPU %d not found.\n",gpu_num);return 1;} CUDA_CHECK(cudaSetDevice(dev));
@@ -49,11 +49,17 @@ int main(int argc,char** argv){
  print_timestamp(); printf("=== CUDA KERNEL RESOURCE PROFILE ===\n");
  printf("Max threads/block          : %d\n",attr.maxThreadsPerBlock); printf("Registers/thread           : %d\n",attr.numRegs); printf("Static shared memory       : %zu bytes\n",attr.sharedSizeBytes); printf("Local spill bytes/thread   : %zu bytes\n",attr.localSizeBytes); printf("Compute capability         : %d.%d\n",prop.major,prop.minor); printf("====================================\n");
 
+#if BTCW_LUT_BITS == 26
+ const size_t EN[6]={33554432ULL,33554432ULL,33554432ULL,33554432ULL,16777216ULL,0ULL};
+ const int TABLE_GROUPS=5;
+#else
  const size_t EN[6]={8388608ULL,8388608ULL,8388608ULL,8388608ULL,8388608ULL,256ULL};
+ const int TABLE_GROUPS=6;
+#endif
  ulong* dtab[6]={};
- print_timestamp(); printf("Allocating/precomputing GLV W24/W9 generator table (~2560 MiB)...\n");
- for(int i=0;i<6;i++){ size_t bytes=EN[i]*8ULL*sizeof(ulong); CUDA_CHECK(cudaMalloc((void**)&dtab[i],bytes)); uint entries=(uint)EN[i]; int t=256; size_t b=(EN[i]+t-1)/t; printf("  group %d/6: %u entries (%zu MiB)\n",i+1,entries,bytes/(1024*1024)); precompute_ecmult_gen_table<<<(unsigned)b,t>>>(dtab[i],(uint)i,entries); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize()); }
- print_timestamp(); printf("Ecmult table ready (GLV W24/W9, 6 groups, ~2560 MiB).\n");
+ print_timestamp(); printf("Allocating/precomputing GLV W%d generator table (~%d MiB)...\n",BTCW_LUT_BITS,(BTCW_LUT_BITS==26)?9216:2560);
+ for(int i=0;i<TABLE_GROUPS;i++){ size_t bytes=EN[i]*8ULL*sizeof(ulong); CUDA_CHECK(cudaMalloc((void**)&dtab[i],bytes)); uint entries=(uint)EN[i]; int t=256; size_t b=(EN[i]+t-1)/t; printf("  group %d/%d: %u entries (%zu MiB)\n",i+1,TABLE_GROUPS,entries,bytes/(1024*1024)); precompute_ecmult_gen_table<<<(unsigned)b,t>>>(dtab[i],(uint)i,entries); CUDA_CHECK(cudaGetLastError()); CUDA_CHECK(cudaDeviceSynchronize()); }
+ print_timestamp(); printf("Ecmult table ready (GLV W%d, %d groups).\n",BTCW_LUT_BITS,TABLE_GROUPS);
 
  uchar *dkey=nullptr,*dhash=nullptr,*dtarget=nullptr; ulong* dnonce=nullptr; uint *dfound=nullptr,*dctr=nullptr;
  CUDA_CHECK(cudaMalloc((void**)&dkey,32)); CUDA_CHECK(cudaMalloc((void**)&dhash,32)); CUDA_CHECK(cudaMalloc((void**)&dtarget,32)); CUDA_CHECK(cudaMalloc((void**)&dnonce,sizeof(ulong))); CUDA_CHECK(cudaMalloc((void**)&dfound,sizeof(uint))); CUDA_CHECK(cudaMalloc((void**)&dctr,sizeof(uint)));
