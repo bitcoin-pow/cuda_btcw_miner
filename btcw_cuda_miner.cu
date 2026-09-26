@@ -1,4 +1,4 @@
-// BTCW.SPACE CUDA GPU Miner v45 - CUDA runtime host + v40 crypto kernel
+// BTCW.SPACE CUDA GPU Miner - RTX 4070 SUPER NEWFORK
 #include <cuda_runtime.h>
 #include <iostream>
 #include <cstdio>
@@ -34,7 +34,7 @@ int main(int argc,char** argv){
  int gpu_num=0; size_t user_work=0, user_block=0;
  if(argc>=2) gpu_num=atoi(argv[1]); if(argc>=3) user_work=strtoull(argv[2],nullptr,10); if(argc>=4) user_block=strtoull(argv[3],nullptr,10);
  int ndev=0; CUDA_CHECK(cudaGetDeviceCount(&ndev)); if(ndev<=0){fprintf(stderr,"No CUDA GPU found.\n");return 1;}
- print_timestamp(); printf("BTCW.SPACE CUDA GPU Miner 4060-v202-NEWFORK (RFC-extra fast path, DER-SHA fixed, sign-batch%d)\n",SIGN_BATCH);
+ print_timestamp(); printf("BTCW.SPACE CUDA GPU Miner RTX 4070 SUPER NEWFORK (W24/W9, RFC-extra fast path, DER-SHA fixed, sign-batch%d)\n",SIGN_BATCH);
  print_timestamp(); printf("Found %d CUDA device(s):\n",ndev);
  for(int i=0;i<ndev;i++){ cudaDeviceProp p{}; CUDA_CHECK(cudaGetDeviceProperties(&p,i)); printf("  Device %d: %s SMs=%d Mem=%zuMB MaxBlock=%d CC=%d.%d\n",i,p.name,p.multiProcessorCount,p.totalGlobalMem/(1024*1024),p.maxThreadsPerBlock,p.major,p.minor); }
  int dev=(gpu_num>0)?gpu_num-1:0; if(dev<0||dev>=ndev){fprintf(stderr,"GPU %d not found.\n",gpu_num);return 1;} CUDA_CHECK(cudaSetDevice(dev));
@@ -47,7 +47,7 @@ int main(int argc,char** argv){
  print_timestamp(); printf("RFC6979 extra-entropy fast path self-test passed.\n");
  cudaFuncAttributes attr{}; CUDA_CHECK(cudaFuncGetAttributes(&attr,btcw_mine));
  print_timestamp(); printf("=== CUDA KERNEL RESOURCE PROFILE ===\n");
- printf("Max threads/block          : %d\n",attr.maxThreadsPerBlock); printf("Registers/thread           : %d\n",attr.numRegs); printf("Static shared memory       : %zu bytes\n",attr.sharedSizeBytes); printf("Local spill bytes/thread   : %zu bytes\n",attr.localSizeBytes); printf("Compute capability         : %d.%d\n",prop.major,prop.minor); printf("====================================\n");
+ printf("Max threads/block          : %d\n",attr.maxThreadsPerBlock); printf("Registers/thread           : %d\n",attr.numRegs); printf("Static shared memory       : %zu bytes\n",attr.sharedSizeBytes); printf("Local memory bytes/thread : %zu bytes\n",attr.localSizeBytes); printf("Compute capability         : %d.%d\n",prop.major,prop.minor); printf("====================================\n");
 
  const size_t EN[6]={8388608ULL,8388608ULL,8388608ULL,8388608ULL,8388608ULL,256ULL};
  ulong* dtab[6]={};
@@ -62,9 +62,20 @@ int main(int argc,char** argv){
  SharedData* shared=(SharedData*)mmap(nullptr,sizeof(SharedData),PROT_READ|PROT_WRITE,MAP_SHARED,shm_fd,0); if(shared==MAP_FAILED){perror("mmap");return 1;}
  print_timestamp(); printf("Shared memory '%s' mapped successfully.\n",SHM_NAME);
 
- size_t block=user_block?user_block:128; if(block>1024||block==0){fprintf(stderr,"Invalid CUDA block size %zu\n",block);return 1;}
+ size_t block=user_block?user_block:128; if(block>(size_t)prop.maxThreadsPerBlock||block>(size_t)attr.maxThreadsPerBlock){fprintf(stderr,"Invalid CUDA block size %zu (device/kernel limit %d/%d)\n",block,prop.maxThreadsPerBlock,attr.maxThreadsPerBlock);return 1;}
  size_t work=user_work?user_work:(size_t)prop.multiProcessorCount*9728ULL; if(work<65536)work=65536; if(work>4194304)work=4194304; if(work%block)work=((work+block-1)/block)*block;
- print_timestamp(); printf("Work size: %zu%s\n",work,user_work?" (manual override)":" (v40 tuned mapping)"); print_timestamp(); printf("CUDA block size: %zu%s\n",block,user_block?" (manual override)":"");
+ // Keep room for CUDA's local-memory backing and other runtime allocations.
+ // Scale the default with SM count, but fit scratch into currently free VRAM.
+ size_t free_bytes=0,total_bytes=0; CUDA_CHECK(cudaMemGetInfo(&free_bytes,&total_bytes));
+ constexpr size_t reserve_bytes=1024ULL*1024*1024;
+ constexpr size_t scratch_per_thread=SIGN_BATCH*(sizeof(Scalar)+(BTCW_HYBRID_RX?sizeof(FieldElement):0));
+ size_t max_work=free_bytes>reserve_bytes?(free_bytes-reserve_bytes)/scratch_per_thread:0;
+ max_work=(max_work/block)*block;
+ if(max_work<block || (user_work && work>max_work)){
+   fprintf(stderr,"Insufficient free GPU memory for work size %zu (scratch budget allows %zu threads). Close other GPU applications or use a smaller work size.\n",work,max_work);return 1;
+ }
+ if(work>max_work){print_timestamp();printf("Reducing automatic work size from %zu to %zu to fit free GPU memory.\n",work,max_work);work=max_work;}
+ print_timestamp(); printf("Work size: %zu%s\n",work,user_work?" (manual override)":" (SM-scaled, memory-limited)"); print_timestamp(); printf("CUDA block size: %zu%s\n",block,user_block?" (manual override)":"");
  constexpr size_t SIGN_BATCH_HOST=SIGN_BATCH; size_t scratch_bytes=work*SIGN_BATCH_HOST*sizeof(Scalar); Scalar* dscratch=nullptr; FieldElement* drxscratch=nullptr; CUDA_CHECK(cudaMalloc((void**)&dscratch,scratch_bytes)); if(BTCW_HYBRID_RX)CUDA_CHECK(cudaMalloc((void**)&drxscratch,scratch_bytes)); print_timestamp(); printf("K/Rx scratch: %.2f / %.2f GiB global\n",(double)scratch_bytes/(1024.0*1024.0*1024.0),drxscratch?(double)scratch_bytes/(1024.0*1024.0*1024.0):0.0);
 
  // Fixed Stage-2 target: 28 leading zero bits in the displayed/arith256 hash.
@@ -87,7 +98,7 @@ int main(int argc,char** argv){
      CUDA_CHECK(cudaGetLastError());
      uint result_found=0,ctr=0; ulong result_nonce=0; CUDA_CHECK(cudaMemcpy(&result_found,dfound,sizeof(uint),cudaMemcpyDeviceToHost)); CUDA_CHECK(cudaMemcpy(&result_nonce,dnonce,sizeof(ulong),cudaMemcpyDeviceToHost)); CUDA_CHECK(cudaMemcpy(&ctr,dctr,sizeof(uint),cudaMemcpyDeviceToHost)); changeCount+=ctr;
      if(result_found){shared->nonce=result_nonce;nonce_prev=result_nonce;}
-     nonce_base = (nonce_base + work*128ULL) & 0xFFFFFFFFULL; if(nonce_base==0) nonce_base=1;
+     nonce_base = (nonce_base + work*NONCES_PER_THREAD) & 0xFFFFFFFFULL; if(nonce_base==0) nonce_base=1;
      memcpy(&hashlow,(const void*)&shared->data[192],8);
      if(hashlow==0){ if(!disconnect_timing){disconnect_start=std::chrono::steady_clock::now();disconnect_timing=true;} if(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now()-disconnect_start).count()>=DISCONNECT_SECONDS){ if(conn_printed||!was_connected){print_timestamp();printf("!!! NOT CONNECTED TO BTCW NODE WALLET !!! Make sure your wallet has at least 1 utxo.\n");conn_printed=false;} std::this_thread::sleep_for(std::chrono::seconds(1)); }} else { if(!was_connected||!conn_printed){print_timestamp();printf("Connected to BTCW node wallet\n");conn_printed=true;} disconnect_timing=false;was_connected=true; }
    }

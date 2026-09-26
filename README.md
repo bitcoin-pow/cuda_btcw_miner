@@ -1,8 +1,8 @@
-# BTCW CUDA Miner — RTX 4060 NEWFORK
+# BTCW CUDA Miner — RTX 4070 SUPER NEWFORK
 
-CUDA miner for the BTCW `NO_EXT_WORK`/NEWFORK signing-work algorithm. The
-default build is tuned for an NVIDIA RTX 4060 (Ada, compute capability 8.9,
-8 GB VRAM) and uses BTCW's original 224-byte shared-memory payload.
+CUDA miner for the BTCW `NO_EXT_WORK`/NEWFORK signing-work algorithm,
+configured for the NVIDIA RTX 4070 SUPER (Ada, compute capability 8.9,
+12 GB VRAM). It uses BTCW's original 224-byte shared-memory payload.
 
 ## Algorithm
 
@@ -53,92 +53,61 @@ known test cases and aborts if they differ.
 - Linux x86-64
 - NVIDIA driver
 - CUDA Toolkit with `nvcc`
-- RTX 4060 or another CUDA-capable NVIDIA GPU
-- roughly 4 GiB of free GPU memory for the default configuration
+- NVIDIA RTX 4070 SUPER (12 GB)
+- approximately 5.6 GiB free for the full RTX 4070 SUPER default work size
+  (table + scratch + 1 GiB runtime reserve; actual CUDA overhead can vary)
 - a compatible BTCW NEWFORK node exposing `/shared_mem`
 
 ## Build
 
-Make the script executable and build:
+```bash
+./build_cuda_4070_super.sh
+```
+
+The standalone script produces only `release/btcw_cuda_miner_4070_super`.
+It compiles native `sm_89` GPU code with `-O3`, a register cap of 160,
+128-candidate signing batches, and scalar-only global scratch. No PTX
+fallback or alternate GPU profiles are packaged.
+
+The W24/W9 table uses approximately 2.5 GiB. The default launch uses
+`56 * 9728 = 544768` threads on the card's 56 SMs, in blocks of 128.
+Scalar scratch uses approximately 2.08 GiB at that work size. Automatic
+sizing reduces the work size if available memory cannot accommodate the
+scratch plus a 1 GiB runtime reserve.
+
+The cryptographic fast paths are enabled, but peak hashrate and the best
+register cap/work size require measurement on an RTX 4070 SUPER. This
+profile has been compiled; GPU performance has not been verified here.
+To compare register caps, rebuild with an explicit value:
 
 ```bash
-chmod +x build_cuda.sh
-./build_cuda.sh
+./build_cuda_4070_super.sh 160
 ```
 
-The default configuration is:
-
-```text
-CUDA architecture: sm_89
-register cap:      160
-sign batch:        128
-```
-
-It creates:
-
-```text
-release/btcw_cuda_miner_batch128
-release/btcw_cuda_miner
-```
-
-Both files contain the same default build. The second name is a compatibility
-copy.
-
-Specify a different register cap with the first argument:
-
-```bash
-./build_cuda.sh 160
-```
-
-Build batch 64 for comparison:
-
-```bash
-CUDA_SIGN_BATCH=64 ./build_cuda.sh 160
-```
-
-This produces `release/btcw_cuda_miner_batch64` and updates the compatibility
-copy `release/btcw_cuda_miner`.
-
-Build for a different CUDA architecture:
-
-```bash
-CUDA_ARCH=sm_89 ./build_cuda.sh 160
-```
-
-The compiler prints register, stack, and spill statistics for the kernels.
-Large local frames are expected because the mining kernel batches many
-secp256k1 operations.
+The compiler prints register, stack, and spill statistics. Large local
+frames are expected for batched secp256k1 operations.
 
 ## Run
 
-Run the recommended batch-128 binary from the repository root:
-
 ```bash
-./release/btcw_cuda_miner_batch128
+./release/btcw_cuda_miner_4070_super
 ```
 
 Command-line syntax:
 
 ```text
-./release/btcw_cuda_miner_batch128 [gpu_number] [work_size] [block_size]
+./release/btcw_cuda_miner_4070_super [gpu_number] [work_size] [block_size]
 ```
 
-Examples:
+GPU number `0` selects the first GPU; positive numbers are one-based.
+Omit work size or use `0` for automatic sizing.
 
 ```bash
-# Default GPU and automatically selected work size
-./release/btcw_cuda_miner_batch128
+# Explicit default launch settings
+./release/btcw_cuda_miner_4070_super 0 544768 128
 
-# Explicit RTX 4060 launch settings
-./release/btcw_cuda_miner_batch128 0 233472 128
-```
-
-The tuned defaults for a 24-SM RTX 4060 are:
-
-```text
-work size:  24 * 9728 = 233472
-block size: 128
-sign batch: 128
+# Smaller scratch allocation
+./release/btcw_cuda_miner_4070_super 0 262144 128
 ```
 
 At startup, confirm that the output contains:
@@ -149,8 +118,8 @@ RFC6979 extra-entropy fast path self-test passed.
 ```
 
 Let the miner run through several two-second reporting intervals before
-recording hashrate. Do not run multiple miners on the same GPU while testing.
-
+recording hashrate. Compare settings with the same clocks and GPU workload.
+Do not run multiple miners on the same GPU while testing.
 Stop cleanly with `Ctrl+C`.
 
 ## Shared-memory interface
@@ -180,6 +149,10 @@ nvcc --version
 
 If the miner reports that it is not connected, ensure the BTCW node and
 wallet are running and that the wallet has at least one UTXO.
+
+If allocation fails, close other GPU applications or reduce the work size.
+Automatic sizing reserves 1 GiB beyond explicit scratch allocations, but
+CUDA local-memory requirements can still vary by driver and build.
 
 If the RFC6979 self-test fails, do not mine with that binary. Rebuild for the
 correct CUDA architecture and investigate the compiler configuration.
